@@ -190,6 +190,12 @@
   .build:active{transform:scale(0.975)}
   .build:disabled{opacity:0.55;cursor:progress;transform:none}
   .build:focus-visible{outline:2px solid #fff;outline-offset:3px}
+  .build.cancel{
+    background:none;color:var(--text);border:1px solid var(--stroke);
+    box-shadow:none;
+    transition:transform 140ms var(--ease-out),background 170ms var(--ease-out),border-color 170ms var(--ease-out),opacity 170ms var(--ease-out);
+  }
+  .build[hidden]{display:none}
 
   .queue{padding:15px 18px 16px;display:flex;flex-direction:column;min-height:calc(100vh - 128px)}
   .qhead{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
@@ -418,6 +424,7 @@
     .btn:hover{background:rgba(255,255,255,0.1)}
     .btn.ghost:hover{background:rgba(255,255,255,0.05)}
     .build:hover{filter:brightness(1.04)}
+    .build.cancel:hover{filter:none;background:rgba(255,255,255,0.06)}
     .seg button:hover{color:rgba(242,242,244,0.85)}
   }
   @media (prefers-reduced-motion:reduce){
@@ -545,6 +552,7 @@
             <button type="button" class="chip" id="sepEr" aria-pressed="false">Separate ER</button>
           </div>
           <button type="submit" class="build" id="buildBtn">Build booklet</button>
+          <button type="button" class="build cancel" id="cancelBtn" hidden>Cancel build</button>
         </div>
       </form>
     </section>
@@ -687,6 +695,7 @@
     er: false,
     separateKinds: [],
     building: false,
+    abort: null,
     lastFile: "",
     lastFiles: [],
     uploaded: []
@@ -705,7 +714,7 @@
     separateChips: $("separateChips"), sepQp: $("sepQp"), sepMs: $("sepMs"),
     sepGt: $("sepGt"), sepEr: $("sepEr"),
     segNote: $("segNote"), modeHint: $("modeHint"),
-    seg: $("modeSeg"), build: $("buildBtn"), status: $("status"),
+    seg: $("modeSeg"), build: $("buildBtn"), cancel: $("cancelBtn"), status: $("status"),
     progress: $("progressBar"), rows: $("rows"), empty: $("empty"),
     drop: $("drop"), fileInput: $("fileInput"),
     cFetched: $("cFetched"), cCached: $("cCached"), cMissing: $("cMissing"),
@@ -1135,6 +1144,10 @@
         setStatus("Build failed: " + evt.message);
         setSummary("Build failed", null);
         break;
+      case "cancelled":
+        setStatus("Build cancelled. Adjust the years or papers and build again.");
+        setSummary("Cancelled", null);
+        break;
       default:
         break;
     }
@@ -1147,6 +1160,7 @@
   var previewSeq = 0;
 
   function schedulePreview() {
+    savePrefs();
     if (state.building) return;
     clearTimeout(previewTimer);
     previewTimer = setTimeout(runPreview, 150);
@@ -1187,6 +1201,71 @@
     });
   }
 
+  var PREFS_KEY = "paperStudio.prefs.v1";
+
+  function savePrefs() {
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({
+        code: state.code,
+        custom: state.custom,
+        papers: state.papers,
+        variants: state.variants,
+        sessions: state.sessions,
+        from: Number(el.fromYear.value),
+        to: Number(el.toYear.value),
+        mode: state.mode,
+        gt: state.gt,
+        er: state.er,
+        separateKinds: state.separateKinds,
+        student: el.student.value
+      }));
+    } catch (e) {
+      // Private mode or a full quota: remembering is a convenience only.
+    }
+  }
+
+  function pickList(value, allowed, fallback) {
+    if (!Array.isArray(value)) return fallback.slice();
+    var out = allowed.filter(function (v) { return value.indexOf(v) !== -1; });
+    return out.length ? out : fallback.slice();
+  }
+
+  function pickYears(value) {
+    var n = Number(value);
+    return YEARS.indexOf(n) !== -1 ? n : null;
+  }
+
+  // Returns null on missing or unusable storage; otherwise a fully validated
+  // object, so a hand-edited or stale entry can never break the page.
+  function readPrefs() {
+    var raw, data;
+    try { raw = localStorage.getItem(PREFS_KEY); } catch (e) { return null; }
+    if (!raw) return null;
+    try { data = JSON.parse(raw); } catch (e) { return null; }
+    if (!data || typeof data !== "object") return null;
+
+    var code = String(data.code || "");
+    if (!/^\d{4}$/.test(code)) code = "4024";
+
+    var kinds = pickList(data.separateKinds, ["qp", "ms", "gt", "er"], []);
+    var mode = ["qps", "qps_then_ms", "interleaved"].indexOf(data.mode) !== -1
+      ? data.mode : "qps_then_ms";
+
+    return {
+      code: code,
+      custom: !!data.custom || PILLS.indexOf(code) === -1,
+      papers: pickList(data.papers, papersFor(code), papersFor(code)),      variants: pickList(data.variants, ["1", "2", "3"], ["1", "2"]),
+      sessions: pickList(data.sessions, ["s", "w"], ["s"]),
+      from: pickYears(data.from),
+      to: pickYears(data.to),
+      mode: mode,
+      gt: !!data.gt && kinds.indexOf("gt") === -1,
+      er: !!data.er && kinds.indexOf("er") === -1,
+      separateKinds: kinds,
+      student: String(data.student || "").slice(0, 48)
+    };
+  }
+
   function configPayload() {
     return {
       code: state.code,
@@ -1206,9 +1285,24 @@
 
   function lockControls(locked) {
     state.building = locked;
+    el.build.hidden = locked;
     el.build.disabled = locked;
-    el.build.textContent = locked ? "Building..." : "Build booklet";
+    el.cancel.hidden = !locked;
+    el.cancel.disabled = false;
+    el.cancel.textContent = "Cancel build";
     el.clearCache.disabled = locked;
+  }
+
+  function cancelBuild() {
+    if (!state.building || !state.abort) return;
+    el.cancel.disabled = true;
+    el.cancel.textContent = "Cancelling...";
+    setStatus("Cancelling build...");
+    fetch("/api/cancel-build", { method: "POST" })
+      .catch(function () {})
+      .then(function () {
+        if (state.abort) state.abort.abort();
+      });
   }
 
   function build() {
@@ -1221,10 +1315,13 @@
     setStatus("Planning booklet...");
     setSummary("Planning booklet", "busy");
 
+    state.abort = new AbortController();
+
     fetch("/api/build-booklet", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(configPayload())
+      body: JSON.stringify(configPayload()),
+      signal: state.abort.signal
     }).then(function (resp) {
       if (!resp.ok) throw new Error("server said " + resp.status);
       if (!resp.body) throw new Error("no stream");
@@ -1236,6 +1333,7 @@
         return reader.read().then(function (chunk) {
           if (chunk.done) {
             if (buffer.trim()) { try { handle(JSON.parse(buffer)); } catch (e) {} }
+            state.abort = null;
             lockControls(false);
             return;
           }
@@ -1251,8 +1349,15 @@
       }
       return pump();
     }).catch(function (err) {
-      setStatus("Build failed: " + err.message);
-      setSummary("Build failed", null);
+      var aborted = err && err.name === "AbortError";
+      state.abort = null;
+      if (aborted) {
+        setStatus("Build cancelled. Adjust the years or papers and build again.");
+        setSummary("Cancelled", null);
+      } else {
+        setStatus("Build failed: " + err.message);
+        setSummary("Build failed", null);
+      }
       lockControls(false);
     });
   }
@@ -1338,11 +1443,14 @@
 
   el.fromYear.addEventListener("change", function () { clampYears("from"); });
   el.toYear.addEventListener("change", function () { clampYears("to"); });
+  el.student.addEventListener("input", savePrefs);
 
   document.getElementById("config").addEventListener("submit", function (e) {
     e.preventDefault();
     build();
   });
+
+  el.cancel.addEventListener("click", cancelBuild);
 
   function openOutput(query) {
     return fetch("/api/open-output?" + query)
@@ -1671,6 +1779,34 @@
     gtSetSummary("JSON exported for " + gt.view.length + " rows.");
   });
 
+  function applyPrefs(prefs) {
+    state.code = prefs.code;
+    state.custom = prefs.custom;
+    state.papers = prefs.papers;
+    state.variants = prefs.variants;
+    state.sessions = prefs.sessions;
+    state.mode = prefs.mode;
+    state.gt = prefs.gt;
+    state.er = prefs.er;
+    state.separateKinds = prefs.separateKinds;
+    el.student.value = prefs.student;
+    el.customCode.value = prefs.custom ? prefs.code : "";
+    el.customRow.classList.toggle("on", prefs.custom);
+    return prefs;
+  }
+
+  // Year selects only exist after fillYears(), so the range is applied there.
+  function applyYears(prefs) {
+    var from = prefs.from === null ? 2020 : prefs.from;
+    var to = prefs.to === null ? 2026 : prefs.to;
+    if (from > to) { var t = from; from = to; to = t; }
+    el.fromYear.value = String(from);
+    el.toYear.value = String(to);
+  }
+
+  var saved = readPrefs();
+  var restored = saved ? applyPrefs(saved) : null;
+
   renderSubjects();
   renderPapers();
   renderVariants();
@@ -1679,6 +1815,7 @@
   renderExtras();
   renderSeparate();
   fillYears();
+  if (restored) applyYears(restored);
   schedulePreview();
   gtFillYears();
   gtFillSubjects();

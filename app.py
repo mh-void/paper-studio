@@ -709,6 +709,7 @@ class Server(ThreadingHTTPServer):
     def __init__(self, addr, handler):
         super().__init__(addr, handler)
         self.busy = False
+        self.cancel = threading.Event()
         self.last_ping = time.time()
         self.stopping = threading.Event()
 
@@ -824,6 +825,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "removed": removed})
             return
 
+        if path == "/api/cancel-build":
+            # Safe to call when nothing is running: the flag is cleared on
+            # the next build, and the UI only shows the button mid-build.
+            self.server.cancel.set()
+            self._json(200, {"ok": True, "busy": self.server.busy})
+            return
+
         if path == "/api/build-booklet":
             payload = self._read_json()
             cfg = validate_config(payload)
@@ -871,9 +879,15 @@ class Handler(BaseHTTPRequestHandler):
         def emit(kind: str, **data):
             events.put(dict(data, event=kind))
 
+        def cancelled() -> bool:
+            return self.server.cancel.is_set()
+
         def work():
             try:
                 entries = plan_entries(cfg)
+                if cancelled():
+                    emit("cancelled", counts={"fetched": 0, "cached": 0, "missing": 0})
+                    return
                 uploaded = [str(n) for n in (payload.get("localFiles") or []) if (CACHE / str(n)).exists()]
                 for name in uploaded:
                     if not any(e["filename"] == name for e in entries):
@@ -889,6 +903,9 @@ class Handler(BaseHTTPRequestHandler):
                 counts = {"fetched": 0, "cached": 0, "missing": 0}
                 pending = []
                 for entry in entries:
+                    if cancelled():
+                        emit("cancelled", counts=dict(counts))
+                        return
                     if entry["kind"] == "local":
                         counts["cached"] += 1
                         emit("cache", filename=entry["filename"])
@@ -902,6 +919,8 @@ class Handler(BaseHTTPRequestHandler):
 
                 # Pass 2: only the misses go to the network, four at a time.
                 def task(entry):
+                    if cancelled():
+                        return "cancelled", None
                     emit("fetch", filename=entry["filename"])
                     try:
                         return fetch_pdf(code, entry["sess"], int(entry["year"]),
@@ -911,14 +930,19 @@ class Handler(BaseHTTPRequestHandler):
                         return "missing", f"{type(exc).__name__}: {exc}"
 
                 if pending:
-                    with ThreadPoolExecutor(max_workers=4) as pool:
+                    pool = ThreadPoolExecutor(max_workers=4)
+                    try:
                         futures = {pool.submit(task, e): e for e in pending}
                         for future in as_completed(futures):
+                            if cancelled():
+                                break
                             entry = futures[future]
                             try:
                                 status, value = future.result()
                             except Exception as exc:  # noqa: BLE001
                                 status, value = "missing", f"{type(exc).__name__}: {exc}"
+                            if status == "cancelled":
+                                continue
                             if status == "cache":
                                 counts["cached"] += 1
                                 emit("cache", filename=entry["filename"],
@@ -931,6 +955,14 @@ class Handler(BaseHTTPRequestHandler):
                                 counts["missing"] += 1
                                 emit("miss", filename=entry["filename"], reason=value,
                                      counts=dict(counts))
+                    finally:
+                        # Don't wait out in-flight downloads on cancel; the
+                        # .tmp file is discarded by the worker, not replaced.
+                        pool.shutdown(wait=False, cancel_futures=True)
+
+                if cancelled():
+                    emit("cancelled", counts=dict(counts))
+                    return
 
                 # Merge still walks `entries` in plan order, so pages and
                 # bookmarks stay Year -> May/June before Oct/Nov -> Component.
@@ -948,6 +980,7 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 events.put(None)
 
+        self.server.cancel.clear()
         self.server.busy = True
         threading.Thread(target=work, daemon=True).start()
         try:
@@ -960,7 +993,9 @@ class Handler(BaseHTTPRequestHandler):
                 if item.get("event") == "fetch":
                     self.server.last_ping = time.time()
         except (BrokenPipeError, ConnectionResetError):
-            pass
+            # The client went away (closed tab or aborted fetch), so stop the
+            # worker instead of finishing a booklet nobody will see.
+            self.server.cancel.set()
         finally:
             self.server.busy = False
 

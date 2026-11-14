@@ -69,7 +69,8 @@ You need Python 3.10 or newer (tested on 3.15) and `pypdf`.
    - **Interleaved** goes `QP 41, MS 41, QP 42, MS 42` per session, so you can mark as you go.
    - **Separate QP / MS / GT / ER** gives one file per kind instead (see below).
 7. The right card previews the exact files for your selection before you build, then streams
-   progress: `queued`, `fetching`, `ok`, `cached`, `missing`.
+   progress: `queued`, `fetching`, `ok`, `cached`, `missing`. **Cancel build** sits where the
+   build button was, so you can stop mid-run and change your mind without waiting.
 8. When it finishes, use **Open merged PDF** (or **Open QP PDF** / **Open MS PDF** /
    **Open GT PDF** / **Open ER PDF** in separate mode) or **Show folder**.
 
@@ -101,6 +102,19 @@ file failed is shown inline.
 
 The request field is `separateKinds`, a list drawn from `["qp", "ms", "gt", "er"]`. An empty
 list (the default) means one merged booklet.
+
+### Remembered selections
+
+The page stores your setup in `localStorage` under `paperStudio.prefs.v1` and restores it on the
+next visit, so reopening Paper Studio lands on the same subject, papers, variants, year range,
+sessions, extras, reading order, separate chips and student name. Every change writes
+immediately, including the student name as you type.
+
+The saved JSON is validated on load rather than trusted. An unknown subject falls back to
+Mathematics D, paper/variant/session lists are filtered against what that subject actually
+offers, years are clamped to 2016-2026 with `from` and `to` swapped if reversed, a separate kind
+can't stay on at the same time as its GT/ER extra, and corrupt or missing JSON falls back to the
+defaults. Dropped PDFs are not remembered, since a cache wipe would leave stale filenames.
 
 ### A\* thresholds tab
 
@@ -181,16 +195,22 @@ downloads and finished PDFs rather than source code. The cover page is a real A4
 | GET | `/` | the UI |
 | POST | `/api/plan` | `{entries: [...]}` from the same planner the build uses; powers the live queue preview |
 | POST | `/api/upload?name=` | store a dropped PDF in `cache/` |
-| POST | `/api/build-booklet` | NDJSON progress stream, then `done` or `error` |
+| POST | `/api/build-booklet` | NDJSON progress stream, then `done`, `cancelled` or `error` |
+| POST | `/api/cancel-build` | stop the running build; in-flight downloads are abandoned, `.tmp` files discarded |
 | POST | `/api/gt-database` | `{code, from, to, sessions, refresh}` → parsed A\* threshold rows |
 | POST | `/api/clear-cache` | delete `cache/*.pdf` only; `gt_db.json` and `output/` survive (409 while a build runs) |
 | GET | `/api/open-output?file=` | open a booklet; add `&folder=1` for the folder |
 | POST | `/api/ping` | browser heartbeat for the idle shutdown |
 
-`/api/build-booklet` emits `plan`, `fetch`, `ok`, `cache`, `miss`, `merge`, `done` and `error`
-lines. When `separateKinds` is non-empty, `done.files` is a list of `{kind, file, pages}` and
-`done.file` is empty. Otherwise `done.files` is an empty list and `done.file` names the merged
+`/api/build-booklet` emits `plan`, `fetch`, `ok`, `cache`, `miss`, `merge`, `done`, `cancelled` and
+`error` lines. When `separateKinds` is non-empty, `done.files` is a list of `{kind, file, pages}`
+and `done.file` is empty. Otherwise `done.files` is an empty list and `done.file` names the merged
 booklet.
+
+A build that gets cancelled stops between worker tasks: the planner loop, the fetch loop and the
+merge check the flag, so nothing is merged from a half-finished run. The NDJSON stream closes
+right after `cancelled`, `server.busy` resets, and the very next build starts clean. Closing the
+tab or aborting the fetch from the browser does the same thing through the broken-pipe path.
 
 ## Known limits
 
