@@ -130,8 +130,9 @@ files:
 Rows only come from the syllabus grade-thresholds table. A 7-column grade block gives an A\*
 value; a 6-column block shows a dash. Combos ending in `2` (like `12, 22, 42`) get a **Zone 4**
 pill. Parsed rows are cached in `cache/gt_db.json`, keyed by filename, size and mtime, so the
-second visit is instant. **Clear cache** only removes `cache/*.pdf`, so the parsed data
-survives.
+second visit is instant. The file also carries a parser version, so a parser change re-reads
+the PDFs already in `cache/` instead of downloading them again. **Clear cache** only removes
+`cache/*.pdf`, so the parsed data survives.
 
 ### Filename convention
 

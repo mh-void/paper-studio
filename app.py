@@ -522,29 +522,53 @@ def _gt_session(sess: str, year: int) -> str:
 GT_DB = CACHE / "gt_db.json"
 _GT_LOCK = threading.Lock()
 
-# "11, 21, 41 200 163 132 101 70 58 47" -> (option, max mark, grade columns)
-# Grade values are extracted only after the syllabus table header, so component
-# rows ("Component 11 40 29 24 18 16 15") never leak in.
+# Rows differ by era. Grade values are extracted only after the syllabus table
+# header, so component rows ("Component 11 40 29 24 18 16 15") never leak in.
 _GT_HEADER = re.compile(r"Combination of\s+components", re.I)
-_GT_ROW = re.compile(
-    r"^\s*(\d{1,2}(?:\s*,\s*\d{1,2}){0,4})\s+(\d{2,3}(?:\.\d)?)\s+"
-    r"((?:\d{1,3}\s+){4,7}\d{1,3})\s*$"
+# 2018-2021: "X 11, 21 180 149 118 87 66 46" (max mark only in prose)
+_GT_ROW_OLD = re.compile(
+    r"^\s*[A-Z]{1,2}\s+(\d{1,2}(?:\s*,\s*\d{1,2}){0,4})\s+"
+    r"((?:\d{1,3}\s+){4,6}\d{1,3})\s*$"
 )
+# 2022-2025: "AY 200 12, 22 175 150 109 68 54 40"
+_GT_ROW_MID = re.compile(
+    r"^\s*[A-Z]{1,2}\s+(\d{2,3})\s+(\d{1,2}(?:\s*,\s*\d{1,2}){0,4})\s+"
+    r"((?:\d{1,3}\s+){4,6}\d{1,3})\s*$"
+)
+# 2026: "12, 22 200 173 147 104 62 49 37" and single component "50 90 78 ..."
+_GT_ROW_NEW = re.compile(
+    r"^\s*(\d{1,2}(?:\s*,\s*\d{1,2}){0,4})\s+(\d{2,3})\s+"
+    r"((?:\d{1,3}\s+){4,6}\d{1,3})\s*$"
+)
+_GT_MAX_PROSE = re.compile(
+    r"maximum\s+total\s+mark.{0,160}?is\s+(\d{2,3})", re.I | re.S
+)
+PARSER_VERSION = 2
 
 
 def _gt_rows_from_text(text: str) -> list[dict]:
     """Tolerant parse of the syllabus-grade table. Never invents an A* value."""
     marker = _GT_HEADER.search(text)
     body = text[marker.end():] if marker else text
+    prose = _GT_MAX_PROSE.search(text)
+    prose_max = int(prose.group(1)) if prose else None
     rows: list[dict] = []
     for line in body.splitlines():
-        m = _GT_ROW.match(line)
-        if not m:
-            continue
-        option = ", ".join(part.strip() for part in m.group(1).split(","))
-        max_mark = int(float(m.group(2)))
-        grades = [int(n) for n in m.group(3).split()]
-        if not 5 <= len(grades) <= 6 or max_mark <= 0:
+        m = _GT_ROW_NEW.match(line)
+        if m:
+            option_raw, max_mark, grade_blob = m.group(1), int(m.group(2)), m.group(3)
+        else:
+            m = _GT_ROW_MID.match(line)
+            if m:
+                option_raw, max_mark, grade_blob = m.group(2), int(m.group(1)), m.group(3)
+            else:
+                m = _GT_ROW_OLD.match(line)
+                if not m or prose_max is None:
+                    continue
+                option_raw, max_mark, grade_blob = m.group(1), prose_max, m.group(2)
+        option = ", ".join(part.strip() for part in option_raw.split(","))
+        grades = [int(n) for n in grade_blob.split()]
+        if not 5 <= len(grades) <= 6 or max_mark <= 0 or max(grades) > max_mark:
             continue
         # 6 grade columns = (A*, A, B, C, D, E). 5 = no A* column at all.
         a_star = grades[0] if len(grades) == 6 else None
@@ -581,10 +605,14 @@ def _gt_db_load() -> dict:
         data = json.loads(GT_DB.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict) or data.get("_parser") != PARSER_VERSION:
+        # Old parser output stays on disk but the PDFs are re-read from cache.
+        return {}
+    return data
 
 
 def _gt_db_save(db: dict) -> None:
+    db["_parser"] = PARSER_VERSION
     tmp = GT_DB.with_suffix(".json.tmp")
     try:
         tmp.write_text(json.dumps(db), encoding="utf-8")
