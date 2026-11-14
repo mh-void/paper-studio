@@ -22,7 +22,8 @@ are written to `output/`. No account, no cloud, no telemetry.
 - **4× parallel downloads** — uncached papers fetch four at a time, with a per-host cap of
   three requests and jittered pacing so no source rate-limits you. Cold builds finish much
   sooner than the old one-at-a-time loop; after that the disk cache is instant.
-- **Separate QP / MS / ER PDFs** — one file per document kind instead of one merged booklet.
+- **Separate QP / MS / GT / ER PDFs** — pick any combination of the four separate chips
+  to get one file per document kind instead of one merged booklet.
 - **A\* Grade Threshold Database** — a second tab that parses every grade-threshold PDF into
   `year, session, option, A* mark, max mark, A* %`, with sortable and filterable columns,
   CSV/JSON export, and a **Zone 4** highlight on mixed-variant combos.
@@ -63,34 +64,44 @@ Requires Python 3.10 or newer (tested on 3.15) and `pypdf`.
 3. Choose **Variants**. V1 + V2 expands every paper to both `41` and `42`.
 4. Pick a year range (2016-2026, inclusive) and the sessions you need.
 5. Optional: grade thresholds, examiner reports, student name for the cover.
-6. Pick a reading order and press **Build booklet**.
+6. Pick a reading order, or tick one or more **Separate** chips, then press **Build booklet**.
    - **QPs Only** — question papers only.
    - **QPs then MS** — every question paper, then every mark scheme.
    - **Interleaved** — `QP 41, MS 41, QP 42, MS 42` per session, so you can mark as you go.
-7. The right card streams progress: `queued`, `fetching`, `ok`, `cached`, `missing`.
-8. When it finishes, use **Open merged PDF** or **Show folder**.
+   - **Separate QP / MS / GT / ER** — one file per kind instead (see below).
+7. The right card previews the exact files for your selection before you build, then streams
+   progress: `queued`, `fetching`, `ok`, `cached`, `missing`.
+8. When it finishes, use **Open merged PDF** (or **Open QP PDF** / **Open MS PDF** /
+   **Open GT PDF** / **Open ER PDF** in separate mode) or **Show folder**.
 
 Pages and bookmarks always follow `Year ascending → May/June before Oct/Nov → Component
 ascending`, no matter what order the parallel downloads finish in. Every paper gets an
 outline entry like `QP 41 · May/June 2024`, plus a `Cover` entry at page 0.
 
-### Separate QP / MS / ER files
+### Separate QP / MS / GT / ER files
 
-Tick **Separate PDFs (QP, MS, ER)** under the reading-order control to get one file per
-document kind instead of one merged booklet:
+Tick any of **Separate QP**, **Separate MS**, **Separate GT**, **Separate ER** under the
+reading-order control to get one file per chosen document kind instead of one merged booklet:
 
 ```
-PaperStudio_{code}_{min}_{max}_{QP|MS|ER}_{HHMMSS}.pdf
+PaperStudio_{code}_{min}_{max}_{QP|MS|GT|ER}_{HHMMSS}.pdf
 ```
 
-Each file gets its own cover page with a section subtitle (`Question papers`, `Mark schemes`,
-`Examiner reports`), its own bookmarks, and only the groups that have content. Grade
-thresholds are still fetched and cached when the extra is on, but they never produce a fourth
-PDF. The reading-order control is disabled in this mode. The completion card shows **Open QP
-PDF**, **Open MS PDF**, and **Open ER PDF**.
+Each chip is independent, so you can ask for three kinds and get three files. Every file gets
+its own cover page with a section subtitle (`Question papers`, `Mark schemes`,
+`Grade thresholds`, `Examiner reports`), its own bookmarks, and every requested kind is
+planned in full even when the reading order is **QPs only** — separate files have no combined
+reading order, so the segmented control dims, its thumb border disappears, and the
+Grade thresholds / Examiner reports extras grey out too (the separate chips are the source of
+truth there). The completion card shows **Open QP PDF**, **Open MS PDF**, **Open GT PDF**, and
+**Open ER PDF** for whichever files were produced.
 
-Missing files are not fatal. The booklet is built from whatever succeeded, and the reason each
-file failed is shown inline.
+A kind with no downloaded content produces no file rather than a cover-only PDF. Missing files
+are not fatal. The booklet is built from whatever succeeded, and the reason each file failed is
+shown inline.
+
+The request field is `separateKinds` — a list drawn from `["qp", "ms", "gt", "er"]`. An empty
+list (the default) means one merged booklet.
 
 ### A\* thresholds tab
 
@@ -157,7 +168,7 @@ index.html            the whole UI: markup, CSS, JS (no external assets)
 requirements.txt      pypdf>=4.0
 Run Paper Studio.bat  one-click Windows launcher
 cache/                downloaded and dropped-in past papers, plus gt_db.json
-output/               merged booklets and separate QP/MS/ER files
+output/               merged booklets and separate QP/MS/GT/ER files
 ```
 
 `cache/` and `output/` are created on startup and are excluded from git — they hold your
@@ -169,7 +180,7 @@ downloads and finished PDFs, not source code. The cover page is a real A4 page
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/` | the UI |
-| POST | `/api/plan` | `{entries: [...]}` from the same planner the build uses |
+| POST | `/api/plan` | `{entries: [...]}` from the same planner the build uses; powers the live queue preview |
 | POST | `/api/upload?name=` | store a dropped PDF in `cache/` |
 | POST | `/api/build-booklet` | NDJSON progress stream, then `done` or `error` |
 | POST | `/api/gt-database` | `{code, from, to, sessions, refresh}` → parsed A\* threshold rows |
@@ -178,9 +189,9 @@ downloads and finished PDFs, not source code. The cover page is a real A4 page
 | POST | `/api/ping` | browser heartbeat for the idle shutdown |
 
 `/api/build-booklet` emits `plan`, `fetch`, `ok`, `cache`, `miss`, `merge`, `done` and
-`error` lines. In separate mode `done.files` is a list of `{kind, file, pages}` and
-`done.file` is empty; otherwise `done.files` is an empty list and `done.file` names the merged
-booklet.
+`error` lines. When `separateKinds` is non-empty, `done.files` is a list of
+`{kind, file, pages}` and `done.file` is empty; otherwise `done.files` is an empty list and
+`done.file` names the merged booklet.
 
 ## Known limits
 

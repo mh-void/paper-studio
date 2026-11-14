@@ -174,7 +174,8 @@
   .seg button[aria-selected="true"]{color:var(--text)}
   .seg button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
   .seg.disabled{opacity:0.38;pointer-events:none}
-  .seg.disabled .thumb{background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.12)}
+  .seg.disabled .thumb{opacity:0;border-color:transparent}
+  .chips.disabled{opacity:0.38;pointer-events:none}
   .seg-note{margin:7px 0 0;font-size:11px;color:var(--dim)}
 
   .build{
@@ -537,8 +538,11 @@
             <button type="button" role="tab" data-mode="interleaved" aria-selected="false">Interleaved</button>
           </div>
           <p class="seg-note" id="segNote" hidden>Reading order is not used while PDFs are separate.</p>
-          <div class="chips" style="margin-top:8px">
-            <button type="button" class="chip" id="separateChip" aria-pressed="false">Separate PDFs (QP, MS, ER)</button>
+          <div class="chips" id="separateChips" role="group" aria-label="Separate PDFs" style="margin-top:8px">
+            <button type="button" class="chip" id="sepQp" aria-pressed="false">Separate QP</button>
+            <button type="button" class="chip" id="sepMs" aria-pressed="false">Separate MS</button>
+            <button type="button" class="chip" id="sepGt" aria-pressed="false">Separate GT</button>
+            <button type="button" class="chip" id="sepEr" aria-pressed="false">Separate ER</button>
           </div>
           <button type="submit" class="build" id="buildBtn">Build booklet</button>
         </div>
@@ -681,7 +685,7 @@
     mode: "qps_then_ms",
     gt: false,
     er: false,
-    separate: false,
+    separateKinds: [],
     building: false,
     lastFile: "",
     lastFiles: [],
@@ -697,7 +701,10 @@
     paperChips: $("paperChips"), variantChips: $("variantChips"),
     sessionChips: $("sessionChips"), fromYear: $("fromYear"), toYear: $("toYear"),
     gtChip: $("gtChip"), erChip: $("erChip"), student: $("studentName"),
-    separateChip: $("separateChip"), segNote: $("segNote"), modeHint: $("modeHint"),
+    extraChips: $("extraChips"),
+    separateChips: $("separateChips"), sepQp: $("sepQp"), sepMs: $("sepMs"),
+    sepGt: $("sepGt"), sepEr: $("sepEr"),
+    segNote: $("segNote"), modeHint: $("modeHint"),
     seg: $("modeSeg"), build: $("buildBtn"), status: $("status"),
     progress: $("progressBar"), rows: $("rows"), empty: $("empty"),
     drop: $("drop"), fileInput: $("fileInput"),
@@ -811,6 +818,7 @@
     renderPapers();
     renderVariants();
     el.customRow.classList.toggle("on", state.custom);
+    schedulePreview();
   }
 
   function renderPapers() {
@@ -830,6 +838,7 @@
     }
     state.papers.sort(function (a, b) { return a - b; });
     renderPapers();
+    schedulePreview();
   }
 
   function renderVariants() {
@@ -849,6 +858,7 @@
     }
     state.variants.sort();
     renderVariants();
+    schedulePreview();
   }
 
   function renderSessions() {
@@ -867,6 +877,7 @@
       state.sessions.splice(i, 1);
     }
     renderSessions();
+    schedulePreview();
   }
 
   function renderExtras() {
@@ -911,31 +922,46 @@
     var to = Number(el.toYear.value);
     if (changed === "from" && from > to) el.toYear.value = String(from);
     if (changed === "to" && to < from) el.fromYear.value = String(to);
+    schedulePreview();
   }
+
+  function separateActive() { return state.separateKinds.length > 0; }
 
   function renderMode() {
     var index = state.mode === "qps" ? 0 : state.mode === "qps_then_ms" ? 1 : 2;
+    var off = separateActive();
     el.seg.setAttribute("data-index", String(index));
+    el.seg.setAttribute("aria-disabled", off ? "true" : "false");
     Array.prototype.forEach.call(el.seg.querySelectorAll("button"), function (btn) {
       btn.setAttribute("aria-selected", btn.getAttribute("data-mode") === state.mode ? "true" : "false");
-      btn.tabIndex = state.separate ? -1 : 0;
+      btn.tabIndex = off ? -1 : 0;
     });
-    el.seg.classList.toggle("disabled", state.separate);
-    el.segNote.hidden = !state.separate;
-    el.modeHint.textContent = state.separate ? "Disabled while separated" : "Applies to one merged file";
+    el.seg.classList.toggle("disabled", off);
+    el.segNote.hidden = !off;
+    el.modeHint.textContent = off ? "Disabled while separated" : "Applies to one merged file";
   }
 
   function renderSeparate() {
-    var b = el.separateChip;
-    b.textContent = "";
-    b.setAttribute("aria-pressed", state.separate ? "true" : "false");
-    var ck = document.createElement("span");
-    ck.className = "ck";
-    ck.appendChild(checkIcon());
-    b.appendChild(ck);
-    var t = document.createElement("span");
-    t.textContent = "Separate PDFs (QP, MS, ER)";
-    b.appendChild(t);
+    var chips = [[el.sepQp, "qp", "Separate QP"], [el.sepMs, "ms", "Separate MS"],
+                 [el.sepGt, "gt", "Separate GT"], [el.sepEr, "er", "Separate ER"]];
+    chips.forEach(function (row) {
+      var b = row[0], on = state.separateKinds.indexOf(row[1]) !== -1;
+      b.textContent = "";
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      var ck = document.createElement("span");
+      ck.className = "ck";
+      ck.appendChild(checkIcon());
+      b.appendChild(ck);
+      var t = document.createElement("span");
+      t.textContent = row[2];
+      b.appendChild(t);
+    });
+    // Extras duplicate Separate GT / ER, so they grey out while separated.
+    el.extraChips.classList.toggle("disabled", separateActive());
+    Array.prototype.forEach.call(el.extraChips.querySelectorAll("button"), function (btn) {
+      btn.toggleAttribute("aria-disabled", separateActive());
+      btn.tabIndex = separateActive() ? -1 : 0;
+    });
     renderMode();
   }
 
@@ -1003,7 +1029,7 @@
       el.doneFile.textContent = state.lastFiles.map(function (f) {
         return f.file + " (" + f.pages + "p)";
       }).join("  \u00b7  ");
-      var labels = { qp: "Open QP PDF", ms: "Open MS PDF", er: "Open ER PDF" };
+      var labels = { qp: "Open QP PDF", ms: "Open MS PDF", gt: "Open GT PDF", er: "Open ER PDF" };
       state.lastFiles.forEach(function (f) {
         var btn = document.createElement("button");
         btn.type = "button";
@@ -1031,8 +1057,7 @@
 
   // Parallel workers finish out of order, so prefer the server's totals and
   // only fall back to local increments if an event arrives without counts.
-  function syncCounts(evt, key) {
-    if (evt.counts) {
+  function syncCounts(evt, key) {    if (evt.counts) {
       counts.fetched = evt.counts.fetched || 0;
       counts.cached = evt.counts.cached || 0;
       counts.missing = evt.counts.missing || 0;
@@ -1115,6 +1140,53 @@
     }
   }
 
+  // --- live queue preview ------------------------------------------------
+  // Before Build, ask the same planner the server uses so the Queue card
+  // shows the exact files that will be requested.
+  var previewTimer = 0;
+  var previewSeq = 0;
+
+  function schedulePreview() {
+    if (state.building) return;
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(runPreview, 150);
+  }
+
+  function previewRows(names) {
+    rowMap = Object.create(null);
+    el.rows.textContent = "";
+    total = names.length;
+    if (!names.length) {
+      var p = document.createElement("p");
+      p.className = "empty";
+      p.textContent = "Nothing to queue for this selection.";
+      el.rows.appendChild(p);
+      el.empty = p;
+      setProgress(0, 0);
+      return;
+    }
+    el.empty = null;
+    names.forEach(function (n) { setBadge(n, "queued", "queued"); });
+    setProgress(0, total);
+  }
+
+  function runPreview() {
+    var seq = ++previewSeq;
+    fetch("/api/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(configPayload())
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      if (seq !== previewSeq || state.building) return;
+      var names = (data.entries || []).map(function (e) { return e.filename; });
+      previewRows(names);
+      setStatus("Plan ready: " + names.length + " file" + (names.length === 1 ? "" : "s") + ". Press Build booklet.");
+      setSummary(names.length + " files queued", null);
+    }).catch(function () {
+      // A failed preview must never block building.
+    });
+  }
+
   function configPayload() {
     return {
       code: state.code,
@@ -1126,7 +1198,7 @@
       mode: state.mode,
       gt: state.gt,
       er: state.er,
-      separate: state.separate,
+      separateKinds: state.separateKinds.slice(),
       student: el.student.value.trim(),
       localFiles: state.uploaded
     };
@@ -1141,6 +1213,8 @@
 
   function build() {
     if (state.building) return;
+    clearTimeout(previewTimer);
+    previewSeq++;
     clearDone();
     resetQueue();
     lockControls(true);
@@ -1222,17 +1296,30 @@
     el.clock.textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
-  el.gtChip.addEventListener("click", function () { state.gt = !state.gt; renderExtras(); });
-  el.erChip.addEventListener("click", function () { state.er = !state.er; renderExtras(); });
-  el.separateChip.addEventListener("click", function () {
-    state.separate = !state.separate;
-    renderSeparate();
+  el.gtChip.addEventListener("click", function () {
+    if (separateActive()) return;
+    state.gt = !state.gt; renderExtras(); schedulePreview();
+  });
+  el.erChip.addEventListener("click", function () {
+    if (separateActive()) return;
+    state.er = !state.er; renderExtras(); schedulePreview();
+  });
+
+  [[el.sepQp, "qp"], [el.sepMs, "ms"], [el.sepGt, "gt"], [el.sepEr, "er"]].forEach(function (row) {
+    row[0].addEventListener("click", function () {
+      var i = state.separateKinds.indexOf(row[1]);
+      if (i === -1) state.separateKinds.push(row[1]);
+      else state.separateKinds.splice(i, 1);
+      renderSeparate();
+      schedulePreview();
+    });
   });
 
   Array.prototype.forEach.call(el.seg.querySelectorAll("button"), function (btn) {
     btn.addEventListener("click", function () {
       state.mode = btn.getAttribute("data-mode");
       renderMode();
+      schedulePreview();
     });
   });
 
@@ -1245,6 +1332,7 @@
       el.subjectHint.textContent = "Custom " + v;
       renderPapers();
       renderVariants();
+      schedulePreview();
     }
   });
 
@@ -1591,6 +1679,7 @@
   renderExtras();
   renderSeparate();
   fillYears();
+  schedulePreview();
   gtFillYears();
   gtFillSubjects();
   tickClock();

@@ -299,6 +299,20 @@ def plan_entries(cfg: dict) -> list[dict]:
             "filename": filename(code, sess, year, kind, comp),
         })
 
+    separate = cfg.get("separateKinds") or []
+    if separate:
+        # Separate files have no combined reading order, so `mode` is ignored
+        # and every requested kind is planned in full.
+        for kind in separate:
+            for year in years:
+                for sess in sessions:
+                    if kind in ("qp", "ms"):
+                        for comp in comps:
+                            add(year, sess, kind, comp)
+                    else:
+                        add(year, sess, kind)
+        return entries
+
     for year in years:
         for sess in sessions:
             if mode == "interleaved":
@@ -357,7 +371,13 @@ def _wrap(text: str, width: int = 92) -> list[str]:
     return lines
 
 
-SECTION_LABELS = {"qp": "Question papers", "ms": "Mark schemes", "er": "Examiner reports"}
+SECTION_LABELS = {
+    "qp": "Question papers",
+    "ms": "Mark schemes",
+    "gt": "Grade thresholds",
+    "er": "Examiner reports",
+}
+SEPARATE_KINDS = ("qp", "ms", "gt", "er")
 
 
 def _cover_page(writer: PdfWriter, cfg: dict, section: str | None = None) -> None:
@@ -455,12 +475,13 @@ def build_booklet(cfg: dict, entries: list[dict], progress=None) -> Path:
 
 
 def build_separate(cfg: dict, entries: list[dict]) -> list[dict]:
-    """Write one PDF per kind. Returns [{kind, file, pages}, ...]."""
+    """Write one PDF per requested kind. Returns [{kind, file, pages}, ...]."""
     code = str(cfg["code"])
     years = sorted({int(y) for y in cfg.get("years") or [0]})
     stamp = time.strftime("%H%M%S")
     files: list[dict] = []
-    for kind in ("qp", "ms", "er"):
+    kinds = cfg.get("separateKinds") or []
+    for kind in kinds:
         group = [e for e in entries if e["kind"] == kind]
         if not group:
             continue
@@ -481,8 +502,10 @@ def build_separate(cfg: dict, entries: list[dict]) -> list[dict]:
             head = entry["kind"].upper() + (" " + entry["comp"] if entry["comp"] else "")
             label = f"{head} · {SESSIONS[entry['sess']][0]} {entry['year']}"
             writer.add_outline_item(label.strip(), start)
-        label = {"qp": "QP", "ms": "MS", "er": "ER"}[kind]
-        out = OUTPUT / f"PaperStudio_{code}_{years[0]}_{years[-1]}_{label}_{stamp}.pdf"
+        if len(writer.pages) < 2:
+            # Nothing but the cover: this kind has no downloaded content.
+            continue
+        out = OUTPUT / f"PaperStudio_{code}_{years[0]}_{years[-1]}_{kind.upper()}_{stamp}.pdf"
         with out.open("wb") as fh:
             writer.write(fh)
         files.append({"kind": kind, "file": out.name,
@@ -664,6 +687,7 @@ def validate_config(payload: dict) -> dict:
     code = str(payload.get("code", "4024")).strip()
     if not re.fullmatch(r"\d{4}", code):
         code = "4024"
+    asked = {str(k) for k in (payload.get("separateKinds") or [])}
     return {
         "code": code,
         "papers": payload.get("papers") or [1],
@@ -673,7 +697,7 @@ def validate_config(payload: dict) -> dict:
         "mode": payload.get("mode") if payload.get("mode") in MODES else "qps_then_ms",
         "gt": bool(payload.get("gt")),
         "er": bool(payload.get("er")),
-        "separate": bool(payload.get("separate")),
+        "separateKinds": [k for k in SEPARATE_KINDS if k in asked],
         "student": str(payload.get("student") or "")[:48],
     }
 
@@ -911,7 +935,7 @@ class Handler(BaseHTTPRequestHandler):
                 # Merge still walks `entries` in plan order, so pages and
                 # bookmarks stay Year -> May/June before Oct/Nov -> Component.
                 emit("merge", files=len(entries))
-                if cfg.get("separate"):
+                if cfg.get("separateKinds"):
                     files = build_separate(cfg, entries)
                     emit("done", file="", pages=sum(f["pages"] for f in files),
                          files=files, counts=counts)
