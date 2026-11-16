@@ -513,6 +513,33 @@ def build_separate(cfg: dict, entries: list[dict]) -> list[dict]:
     return files
 
 
+def export_individual(cfg: dict, entries: list[dict], cancelled=None) -> dict:
+    """Copy each cached PDF into output/<code>_Individual/<Year>/<Session>/.
+
+    Nothing is merged or rewritten: the browser prints a session folder as-is,
+    so a small batch never wastes toner on a cover page.
+    """
+    root = OUTPUT / f"{str(cfg['code'])}_Individual"
+    copied, skipped, names = 0, 0, []
+    for entry in entries:
+        if cancelled and cancelled():
+            break
+        year = int(entry.get("year") or 0)
+        if entry.get("kind") == "local" or year <= 0:
+            skipped += 1
+            continue
+        src = _cache_path(entry["filename"])
+        if not src.is_file():
+            skipped += 1
+            continue
+        folder = root / str(year) / SESSIONS[entry["sess"]][0].replace("/", "-")
+        folder.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, folder / entry["filename"])
+        copied += 1
+        names.append(entry["filename"])
+    return {"folder": root.name, "copied": copied, "skipped": skipped, "names": names}
+
+
 def _gt_session(sess: str, year: int) -> str:
     return f"{SESSIONS[sess][0]} {year}"
 
@@ -783,8 +810,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/open-output":
             self._ping()
             query = parse_qs(parts.query)
+            sub = (query.get("sub") or [""])[0]
             if (query.get("folder") or [""])[0] == "1":
                 target = OUTPUT
+                if sub:
+                    if not re.fullmatch(r"[\w.\-]+", sub):
+                        self._json(400, {"ok": False, "error": "bad folder"})
+                        return
+                    target = (OUTPUT / sub).resolve()
+                    if target.parent != OUTPUT.resolve() or not target.is_dir():
+                        self._json(400, {"ok": False, "error": "not in output folder"})
+                        return
             else:
                 name = (query.get("file") or [""])[0]
                 if not name or "/" in name or "\\" in name or ".." in name:
@@ -869,6 +905,15 @@ class Handler(BaseHTTPRequestHandler):
             self._stream_build(cfg, payload)
             return
 
+        if path == "/api/export-individual":
+            payload = self._read_json()
+            cfg = validate_config(payload)
+            if self.server.busy:
+                self._json(409, {"ok": False, "error": "a build is already running"})
+                return
+            self._stream_build(cfg, payload, export=True)
+            return
+
         if path == "/api/gt-database":
             payload = self._read_json()
             code = str(payload.get("code") or "").strip()
@@ -894,7 +939,7 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json(404, {"ok": False, "error": "not found"})
 
-    def _stream_build(self, cfg: dict, payload: dict) -> None:
+    def _stream_build(self, cfg: dict, payload: dict, export: bool = False) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -990,6 +1035,17 @@ class Handler(BaseHTTPRequestHandler):
 
                 if cancelled():
                     emit("cancelled", counts=dict(counts))
+                    return
+
+                if export:
+                    emit("copy", files=len(entries))
+                    result = export_individual(cfg, entries, cancelled=cancelled)
+                    if cancelled():
+                        emit("cancelled", counts=dict(counts))
+                        return
+                    emit("done", file="", pages=0, files=[],
+                         folder=result["folder"], copied=result["copied"],
+                         skipped=result["skipped"], counts=counts)
                     return
 
                 # Merge still walks `entries` in plan order, so pages and

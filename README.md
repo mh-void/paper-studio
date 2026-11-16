@@ -103,6 +103,27 @@ file failed is shown inline.
 The request field is `separateKinds`, a list drawn from `["qp", "ms", "gt", "er"]`. An empty
 list (the default) means one merged booklet.
 
+### Export individual PDFs (by year)
+
+**Export individual PDFs (by year)** under **Build booklet** copies each matching PDF into its
+own year and session folder instead of merging anything, so a low-toner printer can take one
+small batch at a time:
+
+```
+output/4024_Individual/2024/May-June/4024_s24_qp_12.pdf
+output/4024_Individual/2024/Oct-Nov/4024_w24_ms_12.pdf
+```
+
+Nothing is re-encoded, no cover page is added and no page order is changed: the files are
+byte-for-byte copies of what sits in `cache/`. The export uses the same Subject, years,
+sessions, papers, variants, Extras and Separate chips as a normal build, so the two never
+disagree. Cached PDFs are copied straight across; only misses hit the network, using the same
+four-at-a-time downloader, and **Cancel build** stops it mid-run. Files that never downloaded
+are counted as skipped rather than failing the export, and an existing export folder is written
+over in place without deleting anything else.
+
+The completion card shows **Open <code>_Individual**, which opens that folder directly.
+
 ### Remembered selections
 
 The page stores your setup in `localStorage` under `paperStudio.prefs.v1` and restores it on the
@@ -182,7 +203,8 @@ index.html            the whole UI: markup, CSS, JS (no external assets)
 requirements.txt      pypdf>=4.0
 Run Paper Studio.bat  one-click Windows launcher
 cache/                downloaded and dropped-in past papers, plus gt_db.json
-output/               merged booklets and separate QP/MS/GT/ER files
+output/               merged booklets, separate QP/MS/GT/ER files, <code>_Individual/ exports
+tests/                unittest suite for the individual-PDF export
 ```
 
 `cache/` and `output/` are created on startup and excluded from git, since they hold your
@@ -197,16 +219,20 @@ downloads and finished PDFs rather than source code. The cover page is a real A4
 | POST | `/api/plan` | `{entries: [...]}` from the same planner the build uses; powers the live queue preview |
 | POST | `/api/upload?name=` | store a dropped PDF in `cache/` |
 | POST | `/api/build-booklet` | NDJSON progress stream, then `done`, `cancelled` or `error` |
+| POST | `/api/export-individual` | same stream, but copies PDFs into `output/<code>_Individual/<Year>/<Session>/` |
 | POST | `/api/cancel-build` | stop the running build; in-flight downloads are abandoned, `.tmp` files discarded |
 | POST | `/api/gt-database` | `{code, from, to, sessions, refresh}` → parsed A\* threshold rows |
 | POST | `/api/clear-cache` | delete `cache/*.pdf` only; `gt_db.json` and `output/` survive (409 while a build runs) |
-| GET | `/api/open-output?file=` | open a booklet; add `&folder=1` for the folder |
+| GET | `/api/open-output?file=` | open a booklet; add `&folder=1` for the folder, plus `&sub=<name>` for one export folder |
 | POST | `/api/ping` | browser heartbeat for the idle shutdown |
 
 `/api/build-booklet` emits `plan`, `fetch`, `ok`, `cache`, `miss`, `merge`, `done`, `cancelled` and
 `error` lines. When `separateKinds` is non-empty, `done.files` is a list of `{kind, file, pages}`
 and `done.file` is empty. Otherwise `done.files` is an empty list and `done.file` names the merged
 booklet.
+
+`/api/export-individual` emits the same lines, with `copy` instead of `merge`, and its `done` line
+carries `folder`, `copied` and `skipped` instead of page counts.
 
 A build that gets cancelled stops between worker tasks: the planner loop, the fetch loop and the
 merge check the flag, so nothing is merged from a half-finished run. The NDJSON stream closes

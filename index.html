@@ -196,6 +196,13 @@
     transition:transform 140ms var(--ease-out),background 170ms var(--ease-out),border-color 170ms var(--ease-out),opacity 170ms var(--ease-out);
   }
   .build[hidden]{display:none}
+  .build.secondary{
+    background:rgba(255,255,255,0.06);color:var(--text);
+    border:1px solid var(--stroke);margin-top:8px;
+    font-size:12.5px;font-weight:560;padding:10px 14px;
+    box-shadow:none;
+    transition:transform 140ms var(--ease-out),background 170ms var(--ease-out),border-color 170ms var(--ease-out),opacity 170ms var(--ease-out);
+  }
 
   .queue{padding:15px 18px 16px;display:flex;flex-direction:column;min-height:calc(100vh - 128px)}
   .qhead{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
@@ -552,6 +559,7 @@
             <button type="button" class="chip" id="sepEr" aria-pressed="false">Separate ER</button>
           </div>
           <button type="submit" class="build" id="buildBtn">Build booklet</button>
+          <button type="button" class="build secondary" id="exportBtn">Export individual PDFs (by year)</button>
           <button type="button" class="build cancel" id="cancelBtn" hidden>Cancel build</button>
         </div>
       </form>
@@ -698,6 +706,7 @@
     abort: null,
     lastFile: "",
     lastFiles: [],
+    lastFolder: "",
     uploaded: []
   };
 
@@ -714,7 +723,7 @@
     separateChips: $("separateChips"), sepQp: $("sepQp"), sepMs: $("sepMs"),
     sepGt: $("sepGt"), sepEr: $("sepEr"),
     segNote: $("segNote"), modeHint: $("modeHint"),
-    seg: $("modeSeg"), build: $("buildBtn"), cancel: $("cancelBtn"), status: $("status"),
+    seg: $("modeSeg"), build: $("buildBtn"), export: $("exportBtn"), cancel: $("cancelBtn"), status: $("status"),
     progress: $("progressBar"), rows: $("rows"), empty: $("empty"),
     drop: $("drop"), fileInput: $("fileInput"),
     cFetched: $("cFetched"), cCached: $("cCached"), cMissing: $("cMissing"),
@@ -1027,6 +1036,26 @@
     el.doneActions.textContent = "";
     state.lastFile = "";
     state.lastFiles = [];
+    state.lastFolder = "";
+  }
+
+  function showExport(folder, copied, skipped) {
+    state.lastFile = "";
+    state.lastFiles = [];
+    state.lastFolder = folder;
+    el.doneTitle.textContent = "Individual PDFs ready";
+    el.doneFile.textContent = folder + " \u00b7 " + copied + " file" +
+      (copied === 1 ? "" : "s") + (skipped ? " \u00b7 " + skipped + " skipped" : "");
+    el.doneActions.textContent = "";
+    var open = document.createElement("button");
+    open.type = "button";
+    open.className = "btn primary";
+    open.textContent = "Open " + folder;
+    open.addEventListener("click", function () {
+      openOutput("folder=1&sub=" + encodeURIComponent(folder));
+    });
+    el.doneActions.appendChild(open);
+    el.done.hidden = false;
   }
 
   function showDone(name, files) {
@@ -1116,13 +1145,23 @@
         setProgress(++processed, total);
         break;
       }
+      case "copy":
+        setStatus("Copying " + evt.files + " PDFs into year folders...");
+        setSummary("Copying " + evt.files + " files", "busy");
+        break;
       case "merge":
         setStatus("Merging " + evt.files + " files into one booklet...");
         setSummary("Merging " + evt.files + " files", "busy");
         break;
       case "done":
         setProgress(total, total);
-        if (evt.files && evt.files.length) {
+        if (evt.folder) {
+          var msg = evt.copied + " PDF" + (evt.copied === 1 ? "" : "s") + " in " + evt.folder;
+          if (evt.skipped) msg += " \u00b7 " + evt.skipped + " skipped";
+          setStatus("Done. " + msg + ".");
+          showExport(evt.folder, evt.copied, evt.skipped);
+          setSummary(msg, "ready");
+        } else if (evt.files && evt.files.length) {
           setStatus("Done. " + evt.files.length + " separate PDFs, " + evt.pages + " pages total.");
           showDone("", evt.files);
           setSummary(evt.files.length + " PDFs \u00b7 " + evt.pages + " pages", "ready");
@@ -1287,6 +1326,8 @@
     state.building = locked;
     el.build.hidden = locked;
     el.build.disabled = locked;
+    el.export.hidden = locked;
+    el.export.disabled = locked;
     el.cancel.hidden = !locked;
     el.cancel.disabled = false;
     el.cancel.textContent = "Cancel build";
@@ -1305,19 +1346,20 @@
       });
   }
 
-  function build() {
+  function build(kind) {
     if (state.building) return;
+    var exporting = kind === "export";
     clearTimeout(previewTimer);
     previewSeq++;
     clearDone();
     resetQueue();
     lockControls(true);
-    setStatus("Planning booklet...");
-    setSummary("Planning booklet", "busy");
+    setStatus(exporting ? "Planning export..." : "Planning booklet...");
+    setSummary(exporting ? "Planning export" : "Planning booklet", "busy");
 
     state.abort = new AbortController();
 
-    fetch("/api/build-booklet", {
+    fetch(exporting ? "/api/export-individual" : "/api/build-booklet", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(configPayload()),
@@ -1450,6 +1492,8 @@
     build();
   });
 
+  el.export.addEventListener("click", function () { build("export"); });
+
   el.cancel.addEventListener("click", cancelBuild);
 
   function openOutput(query) {
@@ -1462,6 +1506,10 @@
   }
 
   el.folderBtn.addEventListener("click", function () {
+    if (state.lastFolder) {
+      openOutput("folder=1&sub=" + encodeURIComponent(state.lastFolder));
+      return;
+    }
     openOutput(state.lastFile ? "file=" + encodeURIComponent(state.lastFile) + "&folder=1" : "folder=1");
   });
 
